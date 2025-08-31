@@ -1,0 +1,913 @@
+from OpenGL.GL import *
+from OpenGL.GLUT import *
+from OpenGL.GLU import *
+import math
+import random
+import time
+from OpenGL.GLUT import glutBitmapCharacter, GLUT_BITMAP_HELVETICA_18
+# Window size
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 600
+player_guns = [
+    {'name': 'Pistol', 'damage': 5, 'bullet_speed': 1, 'color': (1.0, 1.0, 0.0), 'size': 0.1},   # yellow, small
+    {'name': 'Rifle', 'damage': 10, 'bullet_speed': 0.55, 'color': (0.0, 1.0, 0.0), 'size': 0.15},  # green, medium
+    {'name': 'Shotgun', 'damage': 20, 'bullet_speed': 5, 'color': (1.0, 0.0, 0.0), 'size': 0.2}  # red, larger
+]
+
+
+current_gun_index = 0
+
+# Game constants
+extra_bosses_spawned = False
+extra_boss_start_time = 0
+extra_bosses = []
+PLAYER_SPEED = 0.15
+BULLET_SPEED = 0.3
+ENEMY_BULLET_SPEED = 0.25
+MAX_ENEMIES_PER_LEVEL = [7, 10, 5]
+ENEMY_SPEEDS = [0.03, 0.06, 0.06]
+ENEMY_HEALTH_DECREASE_PER_BULLET = [10, 5, 5]
+PLAYER_MAX_HEALTH = 100
+ENEMY_MAX_HEALTH = 10
+BOSS_HEALTH = 10
+BOSS_SPEED = 0.03
+ENEMY_FIRE_DISTANCE = 3.0
+BULLET_HIT_DISTANCE = 2.0
+SHIELD_DURATION = 10.0  # seconds
+ENEMY_FIRE_INTERVAL = 2.0
+TILE_SIZE = 2.0
+TILE_ROWS = 40
+TILE_COLS = 40
+# Globals for game state
+player = None
+enemies = []
+bullets = []
+enemy_bullets = []
+walls = []
+safe_shields = []
+medical_kits = []
+
+current_level = 1
+score = 0
+key_collected = False
+win = False
+game_over = False
+shield_active = False
+shield_activated_time = 0
+key_spawned = False
+key_position = (0,0,0)
+gate_position = (12, 0, 12)
+bombs = []
+
+last_enemy_fire_time = 0
+
+# Helper classes
+class Vector3:
+    def __init__(self, x=0,y=0,z=0):
+        self.x = x
+        self.y = y
+        self.z = z
+    def __add__(self, other):
+        return Vector3(self.x+other.x, self.y+other.y, self.z+other.z)
+    def __sub__(self, other):
+        return Vector3(self.x-other.x, self.y-other.y, self.z-other.z)
+    def __mul__(self, scalar):
+        return Vector3(self.x*scalar, self.y*scalar, self.z*scalar)
+    def length(self):
+        return math.sqrt(self.x**2 + self.y**2 + self.z**2)
+    def normalize(self):
+        l = self.length()
+        if l == 0:
+            return Vector3()
+        return Vector3(self.x/l, self.y/l, self.z/l)
+class Bomb:
+    def __init__(self, start_pos, direction, max_distance=7.0):
+        self.start_pos = start_pos
+        self.direction = direction.normalize()
+        self.max_distance = max_distance
+        self.pos = start_pos
+        self.throw_time = time.time()
+        self.exploded = False
+        self.explosion_time = 0
+        self.explosion_duration = 1.0  # 1 second explosion visual
+        self.explosion_radius = 9.0  # explosion sphere size
+    
+    def update(self):
+        current_time = time.time()
+        if not self.exploded:
+            # Move bomb forward gradually or instantly place it at max_distance
+            time_passed = current_time - self.throw_time
+            # For smooth moving bomb:
+            distance_moved = min(time_passed * 5, self.max_distance)  # 5 units/sec speed
+            self.pos = self.start_pos + (self.direction * distance_moved)
+            
+            if current_time - self.throw_time >= 3:  # Time to explode
+                self.exploded = True
+                self.explosion_time = current_time
+                # Damage enemies in radius
+                for enemy in enemies:
+                    if (enemy.pos - self.pos).length() <= self.explosion_radius:
+                        enemy.health -= 8
+                        if enemy.health <= 0 and enemy in enemies:
+                            enemies.remove(enemy)
+        else:
+            # Explosion duration passed
+            if current_time - self.explosion_time > self.explosion_duration:
+                bombs.remove(self)
+    
+    def draw(self):
+        glPushMatrix()
+        glTranslatef(self.pos.x, self.pos.y + 0.3, self.pos.z)
+        if not self.exploded:
+            glColor3f(0.1, 0.1, 0.1)  # Dark small bomb before explosion
+            glutSolidSphere(0.2, 10, 10)
+        else:
+            # Draw big yellow explosion sphere
+            glColor4f(1, 1, 0, 0.5)  # Yellow with some transparency (if enabled)
+            glutSolidSphere(self.explosion_radius, 20, 20)
+        glPopMatrix()
+
+class Player:
+    def __init__(self):
+        self.pos = Vector3(0,0,0)
+        self.dir = 0  # angle in degrees, facing direction (0 along -Z)
+        self.health = PLAYER_MAX_HEALTH
+        self.speed = PLAYER_SPEED
+        self.is_jumping = False
+        self.jump_vel = 0
+        self.grounded = True
+    def move(self, dx, dz):
+        new_pos = Vector3(self.pos.x + dx, self.pos.y, self.pos.z + dz)
+        if not check_collision_with_walls(new_pos):
+            self.pos = new_pos
+    def jump(self):
+        if self.grounded:
+            self.is_jumping = True
+            self.jump_vel = 0.15
+            self.grounded = False
+    def update(self):
+        if self.is_jumping:
+            self.pos.y += self.jump_vel
+            self.jump_vel -= 0.01
+            if self.pos.y <= 0:
+                self.grounded = True
+                self.pos.y = 0
+                self.is_jumping = False
+    def draw(self):
+        glPushMatrix()
+        glTranslatef(self.pos.x, self.pos.y, self.pos.z)
+        glRotatef(self.dir, 0, 1, 0)
+
+        # Head: glutSolidSphere (black)
+        glColor3f(0, 0, 0)
+        glPushMatrix()
+        glTranslatef(0, 1.2, 0)
+        glutSolidSphere(0.3, 20, 20)
+        glPopMatrix()
+
+        # Body: glutSolidCube (gray)
+        glColor3f(0.3, 0.3, 0.3)
+        glPushMatrix()
+        glTranslatef(0, 0.75, 0)  # position at approx mid torso height
+        glScalef(0.6, 0.8, 0.3)  # scale cube to a rectangular torso
+        glutSolidCube(1)
+        glPopMatrix()
+
+        # Chest diamond: glutSolidOctahedron (red), scaled and positioned
+        glColor3f(1, 0, 0)
+        glPushMatrix()
+        glTranslatef(0, 0.75, 0.18)  # front of chest
+        glScalef(0.3, 0.3, 0.1)
+        glutSolidOctahedron()
+        glPopMatrix()
+
+        # Left leg: glutSolidCube (gray)
+        glColor3f(0.6, 0.6, 0.6)
+        glPushMatrix()
+        glTranslatef(-0.15, 0.25, 0)
+        glScalef(0.3, 0.5, 0.3)
+        glutSolidCube(1)
+        glPopMatrix()
+
+        # Right leg: glutSolidCube (gray)
+        glPushMatrix()
+        glTranslatef(0.15, 0.25, 0)
+        glScalef(0.3, 0.5, 0.3)
+        glutSolidCube(1)
+        glPopMatrix()
+
+        # Left arm: glutSolidCube (black)
+        glColor3f(0, 0, 0)
+        glPushMatrix()
+        glTranslatef(-0.45, 0.9, 0)
+        glRotatef(10, 0, 0, 1)
+        glScalef(0.2, 0.6, 0.2)
+        glutSolidCube(1)
+        glPopMatrix()
+
+        # Right arm: glutSolidCube (black)
+        glPushMatrix()
+        glTranslatef(0.45, 0.9, 0)
+        glRotatef(-10, 0, 0, 1)
+        glScalef(0.2, 0.6, 0.2)
+        glutSolidCube(1)
+        glPopMatrix()
+
+        glPopMatrix()
+
+    def get_collision_box(self):
+        return AABB(self.pos.x-0.3, self.pos.y, self.pos.z-0.3, self.pos.x+0.3, self.pos.y+1.3, self.pos.z+0.3)
+def spawn_extra_bosses():
+    global extra_bosses_spawned, extra_boss_start_time, extra_bosses
+    for _ in range(6):
+        x = random.uniform(10, 115)
+        z = random.uniform(10, 115)
+        new_boss = Enemy(x, 0, z, level=3, is_boss=True)
+        enemies.append(new_boss)
+        extra_bosses.append(new_boss)
+    extra_boss_start_time = time.time()
+    extra_bosses_spawned = True
+class Enemy:
+    def __init__(self, x, y, z, level, is_boss=False):
+        self.pos = Vector3(x,y,z)
+        self.level = level
+        self.health = BOSS_HEALTH if is_boss else ENEMY_MAX_HEALTH
+        self.speed = BOSS_SPEED if is_boss else ENEMY_SPEEDS[level-1]
+        self.is_boss = is_boss
+        self.last_fire_time = 0
+        self.bullets_fired = 0
+    def move_towards_player(self, pl_pos):
+        direction = pl_pos - self.pos
+        distance = direction.length()
+        if distance > 0.5:
+            normalized_dir = direction.normalize()
+            move_vec = normalized_dir * self.speed
+            new_pos = self.pos + move_vec
+            if not check_collision_with_walls(new_pos):
+                self.pos = new_pos
+    def fire_bullet(self, pl_pos):
+        now = time.time()
+        global extra_bosses_spawned, extra_boss_start_time, extra_bosses
+        now = time.time()
+        if now - self.last_fire_time >= ENEMY_FIRE_INTERVAL:
+            distance = (pl_pos - self.pos).length()
+            if self.is_boss or distance <= ENEMY_FIRE_DISTANCE:
+                dir_vec = (pl_pos - self.pos).normalize()
+                bullet_start = self.pos + dir_vec * 1.0
+                enemy_bullets.append(Bullet(bullet_start.x, bullet_start.y+0.5, bullet_start.z, dir_vec.x, dir_vec.y, dir_vec.z, ENEMY_BULLET_SPEED, False))
+                self.last_fire_time = now
+
+                if self.is_boss:
+                    self.bullets_fired += 1
+                    if self.bullets_fired >= 5:
+                        self.speed *= 0.4  # increase boss speed by 20%
+                        self.bullets_fired = 0
+                        spawn_extra_bosses()
+        if extra_bosses_spawned and (time.time() - extra_boss_start_time >= 3):
+            for boss in extra_bosses:
+                if boss in enemies:
+                    enemies.remove(boss)
+            extra_bosses.clear()
+            extra_bosses_spawned = False
+
+    def draw(self):
+        glPushMatrix()
+        glTranslatef(self.pos.x, self.pos.y, self.pos.z)
+        
+        # Head circle gray
+        if self.is_boss:
+            glColor3f(0, 0, 0)
+            glPushMatrix()
+            # Draw 3D pyramid head
+            glBegin(GL_TRIANGLES)
+            # Front face
+            glVertex3f(0.0, 1.5, 0.0)
+            glVertex3f(-0.7, 0.5, 0.7)
+            glVertex3f(0.7, 0.5, 0.7)
+            # Right face
+            glVertex3f(0.0, 1.5, 0.0)
+            glVertex3f(0.7, 0.5, 0.7)
+            glVertex3f(0.7, 0.5, -0.7)
+            # Back face
+            glVertex3f(0.0, 1.5, 0.0)
+            glVertex3f(0.7, 0.5, -0.7)
+            glVertex3f(-0.7, 0.5, -0.7)
+            # Left face
+            glVertex3f(0.0, 1.5, 0.0)
+            glVertex3f(-0.7, 0.5, -0.7)
+            glVertex3f(-0.7, 0.5, 0.7)
+            glEnd()
+            glPopMatrix()
+
+            # Boss eyes - small red spheres
+            for x in [-0.3, 0.3]:
+                        glPushMatrix()
+                        glTranslatef(x, 1.3, 0.2)
+                        glColor3f(1, 0, 0)
+                        glutSolidSphere(0.1, 20, 20)
+                        glPopMatrix()
+
+            # Body - 3D cone or cylinder
+            glColor3f(1, 0.6, 0.6)
+            glPushMatrix()
+            glTranslatef(0, 0, 0)
+            glRotatef(-90, 1, 0, 0)  # rotate to standup
+            glutSolidCone(1.0, 1.3, 20, 20)
+            glPopMatrix()
+
+            # Big red diamond - 3D octahedron scaled and positioned on the chest
+            glColor3f(1, 0, 0)
+            glPushMatrix()
+            glTranslatef(0, 0.6, 0.1)
+            glScalef(0.5, 0.5, 0.1)  # flatten in z
+            glutSolidOctahedron()
+            glPopMatrix()
+
+        else:
+    # Enemy head (gray sphere)
+            glColor3f(0.7, 0.7, 0.7)
+            glPushMatrix()
+            glTranslatef(0, 1.5, 0)
+            glutSolidSphere(0.3, 20, 20)
+            glPopMatrix()
+
+    # Red fan-like pattern on head - 4 triangles
+            glColor3f(1, 0, 0)
+            center_x, center_y, center_z = 0.0, 1.5, 0.0
+            radius = 0.3
+            angles = [0, math.pi/2, math.pi, 3*math.pi/2]
+            for angle in angles:
+                glBegin(GL_TRIANGLES)
+                glVertex3f(center_x, center_y, center_z)
+                glVertex3f(center_x + radius * math.cos(angle), center_y, center_z + radius * math.sin(angle))
+                glVertex3f(center_x + radius * math.cos(angle + math.pi/4), center_y, center_z + radius * math.sin(angle + math.pi/4))
+                glEnd()
+
+    # New enemy body structure - replacing blue oval with a cube, for instance
+            glColor3f(0, 0, 1)  # Blue color
+            glPushMatrix()
+            glTranslatef(0, 0.9, 0)  # Adjust position suitably
+            glScalef(0.6, 0.8, 0.6)  # Scale to desired size
+            glutSolidCube(1.2)  # Changed from sphere to cube for body shape
+            glPopMatrix()
+
+    # Arms - black cylinders instead of rectangles
+            glColor3f(0, 0, 0)
+            arm_length = 0.8
+            arm_radius = 0.15
+
+        glPopMatrix()
+
+    def get_collision_box(self):
+        scale = 1.5 if self.is_boss else 1.0
+        return AABB(self.pos.x-0.3*scale, self.pos.y, self.pos.z-0.3*scale, self.pos.x+0.3*scale, self.pos.y+1.3*scale, self.pos.z+0.3*scale)
+
+class Bullet:
+    def __init__(self, x, y, z, dx, dy, dz, speed, from_player=True, color=(1,1,0), size=0.1):
+        self.pos = Vector3(x,y,z)
+        self.dir = Vector3(dx, dy, dz).normalize()
+        self.speed = speed
+        self.from_player = from_player
+        self.alive = True
+        self.color = color
+        self.size = size
+
+    def update(self):
+        self.pos = self.pos + self.dir * self.speed
+        # collisions and out of bounds ...
+
+    def draw(self):
+        glPushMatrix()
+        glTranslatef(self.pos.x, self.pos.y, self.pos.z)
+        glColor3f(*self.color)  # Set bullet color
+        glutSolidSphere(self.size, 8, 8)  # Use bullet size
+        glPopMatrix()
+
+
+class AABB:
+    def __init__(self, minX, minY, minZ, maxX, maxY, maxZ):
+        self.minX = minX
+        self.minY = minY
+        self.minZ = minZ
+        self.maxX = maxX
+        self.maxY = maxY
+        self.maxZ = maxZ
+    def intersects(self, other):
+        return not (self.maxX < other.minX or self.minX > other.maxX or
+                    self.maxY < other.minY or self.minY > other.maxY or
+                    self.maxZ < other.minZ or self.minZ > other.maxZ)
+
+class Wall:
+    def __init__(self, x, y, z, sx, sy, sz, rotation_angle=0, rotation_axis=(0,1,0)):
+        self.pos = Vector3(x, y, z)
+        self.size = Vector3(sx, sy, sz)
+        self.rotation_angle = rotation_angle  # rotation angle in degrees
+        self.rotation_axis = rotation_axis    # rotation axis vector (x,y,z)
+
+    def draw(self):
+        glPushMatrix()
+        glTranslatef(self.pos.x, self.pos.y + self.size.y / 2, self.pos.z)
+        glRotatef(self.rotation_angle, *self.rotation_axis)  # Rotate before scaling and drawing
+        glColor3f(1.0, 1.0, 0)
+        glScalef(self.size.x, self.size.y, self.size.z)
+        glutWireCube(1)
+        glPopMatrix()
+    def get_collision_box(self):
+        return AABB(self.pos.x - self.size.x/2, self.pos.y, self.pos.z - self.size.z/2,
+                    self.pos.x + self.size.x/2, self.pos.y + self.size.y, self.pos.z + self.size.z/2)
+
+class PowerUp:
+    def __init__(self, x, y, z, kind):
+        self.pos = Vector3(x,y,z)
+        self.kind = kind # 'shield' or 'medkit'
+        self.is_collected = False
+    def draw(self):
+        if self.is_collected:
+            return
+        glPushMatrix()
+        glTranslatef(self.pos.x, self.pos.y + 1, self.pos.z)
+    
+        if self.kind == 'shield':
+        # Draw sphere oval (scaled sphere)
+            glColor3f(0, 0, 1)  # Blue color
+            glPushMatrix()
+            glScalef(1.0, 1.5, 1.0)  # Oval stretching in Y direction
+            glutSolidSphere(0.3, 20, 20)
+            glPopMatrix()
+        
+        # Draw diamond shape (octahedron) in the middle
+            glColor3f(1, 1, 1)  # White or light color for contrast
+            glPushMatrix()
+            glScalef(0.5, 0.5, 0.5)  # Smaller scale for diamond
+            glutSolidOctahedron()
+            glPopMatrix()
+        
+        else:
+        # Medkit: Draw red cube
+            glColor3f(1, 0, 0)
+            glutSolidCube(0.6)
+        
+        # Draw white + sign on cube front face using lines
+            glColor3f(1, 1, 1)
+            glLineWidth(3.0)
+            glBegin(GL_LINES)
+        
+        # horizontal line (+)
+            glVertex3f(-0.2, 0.0, 0.31)  # Slightly in front of cube face on Z to make visible
+            glVertex3f(0.2, 0.0, 0.31)
+        
+        # vertical line (+)
+            glVertex3f(0.0, -0.2, 0.31)
+            glVertex3f(0.0, 0.2, 0.31)
+        
+            glEnd()
+    
+        glPopMatrix()
+
+    def get_collision_box(self):
+        return AABB(self.pos.x-0.25, self.pos.y-0.25, self.pos.z-0.25,
+                    self.pos.x+0.25, self.pos.y+0.25, self.pos.z+0.25)
+
+# Collision checks
+def check_collision_with_walls(pos):
+    point_box = AABB(pos.x, pos.y, pos.z, pos.x, pos.y, pos.z)
+    for w in walls:
+        if w.get_collision_box().intersects(point_box):
+            return True
+    return False
+
+def aabb_collision(box1, box2):
+    return box1.intersects(box2)
+def draw_diamond():
+    glBegin(GL_POLYGON)
+    glVertex2f(0.0, 0.3)
+    glVertex2f(-0.3, 0.0)
+    glVertex2f(0.0, -0.3)
+    glVertex2f(0.3, 0.0)
+    glEnd()
+# Initialize game objects
+def init_game():
+    global player, enemies, walls, safe_shields, medical_kits, current_level, key_collected, win, game_over, bullets, enemy_bullets, score, key_spawned
+    player = Player()
+    enemies.clear()
+    bullets.clear()
+    enemy_bullets.clear()
+    key_collected = False
+    win = False
+    game_over = False
+    key_spawned = False
+    score = 0
+    # Create walls as boxes
+    walls.clear()
+   # Right vertical wall
+    walls.append(Wall(-5, 0,55, 0.5, 3, 120))   # Left vertical wall
+    walls.append(Wall(115, 0,55, 0.5, 3, 120))
+
+
+    # Spread out medkit power-ups
+    
+    # Safe shields and medical kits
+    safe_shields.clear()
+    safe_shields.append(PowerUp(2, 0, 2, 'shield'))
+    safe_shields.append(PowerUp(2, 0, 10, 'shield'))
+    safe_shields.append(PowerUp(15, 0, 25, 'shield'))
+    safe_shields.append(PowerUp(40, 0, 50, 'shield'))
+    safe_shields.append(PowerUp(70, 0, 80, 'shield'))
+    medical_kits.clear()
+    medical_kits.append(PowerUp(-2, 0, -2, 'medkit'))
+    medical_kits.append(PowerUp(-10, 0, -20, 'medkit'))
+    medical_kits.append(PowerUp(20, 0, 15, 'medkit'))
+    medical_kits.append(PowerUp(60, 0, 30, 'medkit'))
+    medical_kits.append(PowerUp(90, 0, 95, 'medkit'))
+    # Spawn enemies based on level
+    spawn_enemies(current_level)
+
+def spawn_enemies(level):
+    enemies.clear()
+    enemy_count = MAX_ENEMIES_PER_LEVEL[level-1]
+    for i in range(enemy_count):
+        # Random spawn position away from player (>5 distance)
+        while True:
+            x = random.uniform(12, 105)
+            z = random.uniform(22, 107)
+            dist = math.sqrt((x - player.pos.x)**2 + (z - player.pos.z)**2)
+            if dist > 5:
+                break
+        enemies.append(Enemy(x, 0, z, level))
+    # For level 3 add boss
+    if level == 3:
+        enemies.append(Enemy(10, 0, 10, level, is_boss=True))
+
+# Input handling
+keys_pressed = set()
+
+def special_key(key, x, y):
+    if key == GLUT_KEY_UP:
+        keys_pressed.add('up')
+    elif key == GLUT_KEY_DOWN:
+        keys_pressed.add('down')
+    elif key == GLUT_KEY_LEFT:
+        keys_pressed.add('left')
+    elif key == GLUT_KEY_RIGHT:
+        keys_pressed.add('right')
+
+def special_key_up(key, x, y):
+    if key == GLUT_KEY_UP:
+        keys_pressed.discard('up')
+    elif key == GLUT_KEY_DOWN:
+        keys_pressed.discard('down')
+    elif key == GLUT_KEY_LEFT:
+        keys_pressed.discard('left')
+    elif key == GLUT_KEY_RIGHT:
+        keys_pressed.discard('right')
+
+def keyboard(key, x, y):
+    global shield_active, shield_activated_time, score
+    global current_gun_index
+
+    key = key.decode('utf-8').lower()
+    if key == ' ':
+        fire_player_bullet()
+    elif key == 'c':
+        current_gun_index = (current_gun_index + 1) % len(player_guns)
+    elif key == 't':
+        # Throw bomb
+        direction_rad = math.radians(player.dir)
+        dx = -math.sin(direction_rad)
+        dz = -math.cos(direction_rad)
+        bomb_start = player.pos + Vector3(dx * 1.0, 0.5, dz * 1.0)
+        bombs.append(Bomb(bomb_start, Vector3(dx, 0, dz)))
+    elif key == 'k':
+        # Check if player intersects with shield or medkit
+        for shield in safe_shields:
+            if not shield.is_collected and aabb_collision(player.get_collision_box(), shield.get_collision_box()):
+                shield.is_collected = True
+                shield_active = True
+                shield_activated_time = time.time()
+                return
+        for medkit in medical_kits:
+            if not medkit.is_collected and aabb_collision(player.get_collision_box(), medkit.get_collision_box()):
+                medkit.is_collected = True
+                player.health = min(player.health + 50, PLAYER_MAX_HEALTH)
+                return
+
+def fire_player_bullet():
+    global current_gun_index, player_guns
+    gun = player_guns[current_gun_index]
+    direction_rad = math.radians(player.dir)
+    dx = -math.sin(direction_rad)
+    dz = -math.cos(direction_rad)
+    bullet_start = player.pos + Vector3(dx*1.0, 0.5, dz*1.0)
+    bullets.append(
+        Bullet(
+            bullet_start.x, bullet_start.y, bullet_start.z,
+            dx, 0, dz,
+            gun['bullet_speed'],
+            True,
+            color=gun['color'],
+            size=gun['size']
+        )
+    )
+
+
+def update(value=None):
+    global current_level, key_collected, win, game_over, shield_active, shield_activated_time, score, key_spawned
+
+    if game_over or win:
+        glutPostRedisplay()
+        glutTimerFunc(16, update, 0)
+        return
+
+    # Player movement from arrow keys
+    dx = 0
+    dz = 0
+    if 'up' in keys_pressed:
+        dx += -math.sin(math.radians(player.dir)) * player.speed
+        dz += -math.cos(math.radians(player.dir)) * player.speed
+    if 'down' in keys_pressed:
+        dx += math.sin(math.radians(player.dir)) * player.speed
+        dz += math.cos(math.radians(player.dir)) * player.speed
+    if 'left' in keys_pressed:
+        player.dir = (player.dir + 3) % 360
+    if 'right' in keys_pressed:
+        player.dir = (player.dir - 3) % 360
+
+    player.move(dx, dz)
+    player.update()
+
+    # Update bullets
+    for b in bullets:
+        b.update()
+    bullets[:] = [b for b in bullets if b.alive]
+
+    for eb in enemy_bullets:
+        eb.update()
+    enemy_bullets[:] = [eb for eb in enemy_bullets if eb.alive]
+
+    # Enemies move and fire
+    for enemy in enemies:
+        enemy.move_towards_player(player.pos)
+        enemy.fire_bullet(player.pos)
+    for bomb in bombs:
+        bomb.update()
+    # Check bullet collisions (player bullets)
+    for bullet in bullets:
+        for enemy in enemies:
+            if aabb_collision(AABB(bullet.pos.x-0.15, bullet.pos.y-0.15, bullet.pos.z-0.15,
+                                bullet.pos.x+0.15, bullet.pos.y+0.15, bullet.pos.z+0.15),
+                            enemy.get_collision_box()):
+                bullet.alive = False
+                damage = player_guns[current_gun_index]['damage']
+                if enemy.is_boss:
+                    damage = 1  # or scale if desired for boss
+                enemy.health -= damage
+                if enemy.health <= 0:
+                    enemies.remove(enemy)
+                    score += 10
+                break
+
+
+    # Spawn key only after all enemies (including boss) are killed
+    if len(enemies) == 0 and not key_spawned:
+        # Spawn key near center or defined position
+        global key_position
+        key_position = (gate_position[0], 0.5, gate_position[2])  # Change position as needed
+        key_spawned = True
+        key_collected = False
+
+    if key_spawned:
+        key_box = AABB(key_position[0]-0.2, key_position[1]-0.2, key_position[2]-0.2,
+                       key_position[0]+0.2, key_position[1]+0.2, key_position[2]+0.2)
+        if aabb_collision(player.get_collision_box(), key_box):
+            key_collected = True
+            key_spawned = False
+            # No win here; player now allowed to unlock gate
+
+    # Detect collision with gate and transition levels or finish
+    gate_box = AABB(gate_position[0]-1, 0, gate_position[2]-1,
+                    gate_position[0]+1, 3, gate_position[2]+1)
+
+
+    # Enemy bullets collide with player (check shield)
+    for eb in enemy_bullets:
+        if aabb_collision(AABB(eb.pos.x-0.15, eb.pos.y-0.15, eb.pos.z-0.15,
+                               eb.pos.x+0.15, eb.pos.y+0.15, eb.pos.z+0.15),
+                          player.get_collision_box()):
+            eb.alive = False
+            if not shield_active:
+                player.health -= 10
+                if player.health <= 0:
+                    game_over = True
+
+    # Deactivate shield after duration
+    if shield_active and (time.time() - shield_activated_time >= SHIELD_DURATION):
+        shield_active = False
+
+    # Check collision with key to collect
+    if key_spawned:
+        key_box = AABB(key_position[0]-0.2, key_position[1]-0.2, key_position[2]-0.2,
+                       key_position[0]+0.2, key_position[1]+0.2, key_position[2]+0.2)
+        if aabb_collision(player.get_collision_box(), key_box):
+            key_collected = True
+            key_spawned = False
+            win = True  # Now key collected, gate can be opened
+
+    # Player collides with gate
+    gate_box = AABB(gate_position[0]-1, 0, gate_position[2]-1,
+                    gate_position[0]+1, 3, gate_position[2]+1)
+    if aabb_collision(player.get_collision_box(), gate_box):
+        if key_collected:
+            if current_level < 3:
+                current_level += 1
+                spawn_enemies(current_level)
+                key_collected = False
+                key_spawned = False
+                win = False
+            else:
+                if key_collected:
+                    win = True
+
+    glutPostRedisplay()
+    glutTimerFunc(16, update, 0)
+
+def draw_walls():
+    for w in walls:
+        glPushMatrix()
+        glTranslatef(w.pos.x, w.pos.y + w.size.y/2, w.pos.z)
+        glColor3f(0, 0.6, 0)  # Filled dark green color for walls
+        glScalef(w.size.x, w.size.y, w.size.z)
+        glutSolidCube(1)
+        glPopMatrix()
+# Drawing the battlefield ground
+def draw_battlefield():
+    for i in range(20):
+        for j in range(20):
+            x_start = -5 + i * 6
+            x_end = x_start + 6
+            z_start = -5 + j * 6  # renamed y_start to z_start for clarity
+            z_end = z_start + 6
+
+            tile_color = (i + j) % 2
+            if tile_color == 0:
+                glColor3f(0.4, 0.1,0.1)
+            else:
+                glColor3f(0.1, 0.2, 0.7)
+            glBegin(GL_QUADS)
+            glVertex3f(x_start, 0, z_start)   # y=0 so tiles lie on XZ plane horizontally
+            glVertex3f(x_end, 0, z_start)
+            glVertex3f(x_end, 0, z_end)
+            glVertex3f(x_start, 0, z_end)
+            glEnd()
+
+# Drawing the key
+def draw_key():
+    if key_spawned:
+        glPushMatrix()
+        glTranslatef(*key_position)
+        glColor3f(1, 1, 0)
+        glutSolidTeapot(0.3)
+        glPopMatrix()
+
+# Drawing the gate
+def draw_gate():
+    glPushMatrix()
+    glTranslatef(gate_position[0], 2, gate_position[2])
+    glColor3f(0.7, 0.7, 0.7)
+    glScalef(2, 3, 0.5)
+    glutSolidCube(1)
+    glPopMatrix()
+def draw_player_health_bar(player):
+    length = 1.0 * (player.health / PLAYER_MAX_HEALTH)
+    glPushMatrix()
+    glTranslatef(player.pos.x - 0.5, player.pos.y + 1.8, player.pos.z)
+    glRotatef(0, 0, 1, 0)  # Reset rotation here if needed
+    glColor3f(1, 0, 0)
+    glBegin(GL_QUADS)
+    glVertex3f(0, 0, 0)
+    glVertex3f(length, 0, 0)
+    glVertex3f(length, 0.2, 0)
+    glVertex3f(0, 0.2, 0)
+    glEnd()
+    glPopMatrix()
+
+# Drawing health bars over characters
+def draw_health_bar(x, y, z, current, maximum):
+    length = 1.0 * (current / maximum)
+    glPushMatrix()
+    glTranslatef(x-0.5, y + 1.8, z)
+    glColor3f(1, 0, 0)
+    glBegin(GL_QUADS)
+    glVertex3f(0, 0, 0)
+    glVertex3f(length, 0, 0)
+    glVertex3f(length, 0.2, 0)
+    glVertex3f(0, 0.2, 0)
+    glEnd()
+    glPopMatrix()
+
+# Display callback
+def display():
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glLoadIdentity()
+
+    # Camera follows player behind at fixed distance
+    distance_behind = 6.0
+    eye_x = player.pos.x + distance_behind * math.sin(math.radians(player.dir))
+    eye_y = player.pos.y + 3.0
+    eye_z = player.pos.z + distance_behind * math.cos(math.radians(player.dir))
+    
+# Look at the player with a slight head height offset
+    look_x = player.pos.x
+    look_y = player.pos.y + 1.5
+    look_z = player.pos.z
+
+    gluLookAt(eye_x, eye_y, eye_z, look_x, look_y, look_z, 0, 1, 0)
+
+    draw_battlefield()
+    draw_walls() 
+
+    # Draw walls
+    for w in walls:
+        w.draw()
+
+    # Draw player and health bar
+    player.draw()
+    draw_player_health_bar(player)
+
+    # Draw enemies and health bars
+    for enemy in enemies:
+        enemy.draw()
+        draw_health_bar(enemy.pos.x, enemy.pos.y, enemy.pos.z, enemy.health, BOSS_HEALTH if enemy.is_boss else ENEMY_MAX_HEALTH)
+
+    # Draw bullets
+    for b in bullets:
+        b.draw()
+    for eb in enemy_bullets:
+        eb.draw()
+    # Draw bombs
+    for bomb in bombs:
+        bomb.draw()
+
+    # Draw power-ups
+    for shield in safe_shields:
+        shield.draw()
+    for medkit in medical_kits:
+        medkit.draw()
+
+    draw_key()
+    draw_gate()
+
+    # Show game info text
+    glColor3f(1, 1, 1)
+    glWindowPos2i(10, SCREEN_HEIGHT - 20)
+    show_text(f'Level: {current_level}  Score: {score}')
+    glWindowPos2i(10, SCREEN_HEIGHT - 40)
+    show_text(f'Health: {player.health}  Shield: {"Active" if shield_active else "Inactive"}')
+    glWindowPos2i(10, SCREEN_HEIGHT - 60)
+    show_text(f'Gun: {player_guns[current_gun_index]["name"]}')
+
+
+    if win:
+        glWindowPos2i(SCREEN_WIDTH // 2 - 50, SCREEN_HEIGHT // 2)
+        show_text("You Win! Congratulations!")
+
+    if game_over:
+        glWindowPos2i(SCREEN_WIDTH // 2 - 50, SCREEN_HEIGHT // 2)
+        show_text("Game Over! Try Again!")
+
+    glutSwapBuffers()
+
+def show_text(text):
+    for ch in text:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(ch))
+
+# Resize callback
+def reshape(w, h):
+    glViewport(0, 0, w, h)
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(60, float(w)/float(h), 0.1, 100)
+    glMatrixMode(GL_MODELVIEW)
+
+# Main function
+def main():
+    glutInit()
+    glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH)
+    glutInitWindowSize(SCREEN_WIDTH, SCREEN_HEIGHT)
+    glutCreateWindow(b'3D Battle Game')
+
+    glEnable(GL_DEPTH_TEST)
+
+    init_game()
+
+    glutDisplayFunc(display)
+    glutReshapeFunc(reshape)
+    glutKeyboardFunc(keyboard)
+    glutSpecialFunc(special_key)
+    glutSpecialUpFunc(special_key_up)
+    glutTimerFunc(16, update, 0)
+
+    glutMainLoop()
+
+
+if __name__ == "__main__":
+    main()

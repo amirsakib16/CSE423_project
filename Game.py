@@ -8,18 +8,18 @@ from OpenGL.GLUT import glutBitmapCharacter, GLUT_BITMAP_HELVETICA_18
 # Window size
 SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
-player_guns = [
+GUNS = [
     {'name': 'Pistol', 'damage': 5, 'bullet_speed': 1, 'color': (1.0, 1.0, 0.0), 'size': 0.1},   # yellow, small
     {'name': 'Rifle', 'damage': 10, 'bullet_speed': 0.55, 'color': (0.0, 1.0, 0.0), 'size': 0.15},  # green, medium
     {'name': 'Shotgun', 'damage': 20, 'bullet_speed': 5, 'color': (1.0, 0.0, 0.0), 'size': 0.2}  # red, larger
 ]
 
 
-current_gun_index = 0
+GUN_INDEX = 0
 
 # Game constants
-extra_bosses_spawned = False
-extra_boss_start_time = 0
+EXTRA_BOSS = False
+TIMER_BOSS = 0
 extra_bosses = []
 PLAYER_SPEED = 0.15
 BULLET_SPEED = 0.3
@@ -93,25 +93,26 @@ class Bomb:
         self.explosion_radius = 9.0  # explosion sphere size
     
     def update(self):
+        global score
         current_time = time.time()
         if not self.exploded:
-            # Move bomb forward gradually or instantly place it at max_distance
+        # Move bomb forward gradually or instantly place it at max_distance
             time_passed = current_time - self.throw_time
-            # For smooth moving bomb:
             distance_moved = min(time_passed * 5, self.max_distance)  # 5 units/sec speed
             self.pos = self.start_pos + (self.direction * distance_moved)
-            
+        
             if current_time - self.throw_time >= 3:  # Time to explode
                 self.exploded = True
                 self.explosion_time = current_time
-                # Damage enemies in radius
-                for enemy in enemies:
+                enemies_killed = 0
+                for enemy in enemies[:]:  # iterate over copy to avoid issues when removing
                     if (enemy.pos - self.pos).length() <= self.explosion_radius:
-                        enemy.health -= 8
+                        enemy.health -= 10
                         if enemy.health <= 0 and enemy in enemies:
                             enemies.remove(enemy)
+                            enemies_killed += 10
+                score += enemies_killed  # increment score by number of enemies killed
         else:
-            # Explosion duration passed
             if current_time - self.explosion_time > self.explosion_duration:
                 bombs.remove(self)
     
@@ -218,15 +219,15 @@ class Player:
     def get_collision_box(self):
         return AABB(self.pos.x-0.3, self.pos.y, self.pos.z-0.3, self.pos.x+0.3, self.pos.y+1.3, self.pos.z+0.3)
 def spawn_extra_bosses():
-    global extra_bosses_spawned, extra_boss_start_time, extra_bosses
+    global EXTRA_BOSS, TIMER_BOSS, extra_bosses
     for _ in range(6):
         x = random.uniform(10, 115)
         z = random.uniform(10, 115)
         new_boss = Enemy(x, 0, z, level=3, is_boss=True)
         enemies.append(new_boss)
         extra_bosses.append(new_boss)
-    extra_boss_start_time = time.time()
-    extra_bosses_spawned = True
+    TIMER_BOSS = time.time()
+    EXTRA_BOSS = True
 class Enemy:
     def __init__(self, x, y, z, level, is_boss=False):
         self.pos = Vector3(x,y,z)
@@ -247,7 +248,7 @@ class Enemy:
                 self.pos = new_pos
     def fire_bullet(self, pl_pos):
         now = time.time()
-        global extra_bosses_spawned, extra_boss_start_time, extra_bosses
+        global EXTRA_BOSS, TIMER_BOSS, extra_bosses
         now = time.time()
         if now - self.last_fire_time >= ENEMY_FIRE_INTERVAL:
             distance = (pl_pos - self.pos).length()
@@ -263,12 +264,12 @@ class Enemy:
                         self.speed *= 0.4  # increase boss speed by 20%
                         self.bullets_fired = 0
                         spawn_extra_bosses()
-        if extra_bosses_spawned and (time.time() - extra_boss_start_time >= 3):
+        if EXTRA_BOSS and (time.time() - TIMER_BOSS >= 3):
             for boss in extra_bosses:
                 if boss in enemies:
                     enemies.remove(boss)
             extra_bosses.clear()
-            extra_bosses_spawned = False
+            EXTRA_BOSS = False
 
     def draw(self):
         glPushMatrix()
@@ -563,13 +564,13 @@ def special_key_up(key, x, y):
 
 def keyboard(key, x, y):
     global shield_active, shield_activated_time, score
-    global current_gun_index
+    global GUN_INDEX
 
     key = key.decode('utf-8').lower()
     if key == ' ':
         fire_player_bullet()
     elif key == 'c':
-        current_gun_index = (current_gun_index + 1) % len(player_guns)
+        GUN_INDEX = (GUN_INDEX + 1) % len(GUNS)
     elif key == 't':
         # Throw bomb
         direction_rad = math.radians(player.dir)
@@ -592,8 +593,8 @@ def keyboard(key, x, y):
                 return
 
 def fire_player_bullet():
-    global current_gun_index, player_guns
-    gun = player_guns[current_gun_index]
+    global GUN_INDEX, GUNS
+    gun = GUNS[GUN_INDEX]
     direction_rad = math.radians(player.dir)
     dx = -math.sin(direction_rad)
     dz = -math.cos(direction_rad)
@@ -657,7 +658,7 @@ def update(value=None):
                                 bullet.pos.x+0.15, bullet.pos.y+0.15, bullet.pos.z+0.15),
                             enemy.get_collision_box()):
                 bullet.alive = False
-                damage = player_guns[current_gun_index]['damage']
+                damage = GUNS[GUN_INDEX]['damage']
                 if enemy.is_boss:
                     damage = 1  # or scale if desired for boss
                 enemy.health -= damage
@@ -863,7 +864,7 @@ def display():
     glWindowPos2i(10, SCREEN_HEIGHT - 40)
     show_text(f'Health: {player.health}  Shield: {"Active" if shield_active else "Inactive"}')
     glWindowPos2i(10, SCREEN_HEIGHT - 60)
-    show_text(f'Gun: {player_guns[current_gun_index]["name"]}')
+    show_text(f'Gun: {GUNS[GUN_INDEX]["name"]}')
 
 
     if win:
@@ -907,7 +908,7 @@ def main():
     glutTimerFunc(16, update, 0)
 
     glutMainLoop()
-
+Bomb
 
 if __name__ == "__main__":
     main()

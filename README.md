@@ -1,0 +1,8 @@
+![Page 1](photos/p1.jpg)
+![Page 2](photos/p2.jpg)
+![Page 3](photos/p3.jpg)
+![Page 4](photos/p4.jpg)
+![Page 5](photos/p5.jpg)
+![Page 6](photos/p6.jpg)
+![Page 7](photos/p7.jpg)
+![Page 8](photos/p8.jpg)

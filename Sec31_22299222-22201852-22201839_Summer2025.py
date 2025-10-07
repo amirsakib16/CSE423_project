@@ -111,11 +111,11 @@ class Bomb:
     def draw(self):
         glPushMatrix()
         glTranslatef(self.pos.x, self.pos.y + 0.3, self.pos.z)
-        if not self.isExploded:
+        if not self.isExploded: #normal
             glColor3f(0.1, 0.1, 0.1)  
             glutSolidSphere(0.2, 10, 10)
         else:
-            glColor4f(1, 1, 0, 0.5) 
+            glColor4f(1, 1, 0, 0.5) #exploded 
             glutSolidSphere(self.areaOfExplosion, 20, 20)
         glPopMatrix()
 class Player:
@@ -135,40 +135,40 @@ class Player:
         glColor3f(0, 0, 0)
         glPushMatrix()
         glTranslatef(0, 1.2, 0)
-        glutSolidSphere(0.3, 20, 20)
+        glutSolidSphere(0.3, 20, 20) #head
         glPopMatrix()
         glColor3f(0.3, 0.3, 0.3)
         glPushMatrix()
-        glTranslatef(0, 0.75, 0)  
+        glTranslatef(0, 0.75, 0) #body  
         glScalef(0.6, 0.8, 0.3)  
         glutSolidCube(1)
         glPopMatrix()
         glColor3f(1, 0, 0)
         glPushMatrix()
-        glTranslatef(0, 0.75, 0.18)
+        glTranslatef(0, 0.75, 0.18)#diamond
         glScalef(0.3, 0.3, 0.1)
         glutSolidOctahedron()
         glPopMatrix()
         glColor3f(0.6, 0.6, 0.6)
         glPushMatrix()
-        glTranslatef(-0.15, 0.25, 0)
+        glTranslatef(-0.15, 0.25, 0) #leg
         glScalef(0.3, 0.5, 0.3)
         glutSolidCube(1)
         glPopMatrix()
         glPushMatrix()
-        glTranslatef(0.15, 0.25, 0)
+        glTranslatef(0.15, 0.25, 0) #leg
         glScalef(0.3, 0.5, 0.3)
         glutSolidCube(1)
         glPopMatrix()
         glColor3f(0, 0, 0)
         glPushMatrix()
-        glTranslatef(-0.45, 0.9, 0)
+        glTranslatef(-0.45, 0.9, 0)  #hand
         glRotatef(10, 0, 0, 1)
         glScalef(0.2, 0.6, 0.2)
         glutSolidCube(1)
         glPopMatrix()
         glPushMatrix()
-        glTranslatef(0.45, 0.9, 0)
+        glTranslatef(0.45, 0.9, 0)#hand
         glRotatef(-10, 0, 0, 1)
         glScalef(0.2, 0.6, 0.2)
         glutSolidCube(1)
@@ -752,9 +752,9 @@ def display():
         show_text("You Win! Congratulations!")
     if game_over:
         glWindowPos2i(SCREEN_WIDTH // 2 - 50, SCREEN_HEIGHT // 2)
-        show_text("Game Over! Try Again!")
+        show_text("Ga me Over! Try Again!")
     glutSwapBuffers()
-def show_text(text):
+def show_text(text):    
     for ch in text:
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(ch))
 def reshape(w, h):
